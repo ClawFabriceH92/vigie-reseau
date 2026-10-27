@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Trois arcs de signal, comme un radar de réseau. -->
+    <path
+        android:fillColor="#00E5A0"
+        android:pathData="M54,30 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+    <path
+        android:strokeColor="#00E5A0"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M34,44 A28,28 0 0,1 74,44" />
+    <path
+        android:strokeColor="#00E5A0"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M24,58 A40,40 0 0,1 84,58" />
+    <path
+        android:strokeColor="#7CFFC8"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M14,72 A52,52 0 0,1 94,72" />
+</vector>
