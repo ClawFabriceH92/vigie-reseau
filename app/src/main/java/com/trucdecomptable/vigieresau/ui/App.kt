@@ -220,6 +220,26 @@ private fun OngletPasserelle(
                 Ligne("Sous-réseau", etat.sousReseau ?: "—")
                 Ligne("Uplink", etat.uplink ?: "—")
                 Ligne("Surveillance", if (etat.surveillance) "active" else "arrêtée")
+                Ligne(
+                    "Observation DNS",
+                    when {
+                        etat.dnsActif -> etat.dnsInfo ?: "active"
+                        etat.surveillance -> "inactive"
+                        else -> "—"
+                    },
+                )
+            }
+        }
+
+        if (etat.surveillance && !etat.dnsActif) {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Appareils et volumes mesurés, domaines non observés", fontWeight = FontWeight.SemiBold)
+                    etat.dnsInfo?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
             }
         }
 

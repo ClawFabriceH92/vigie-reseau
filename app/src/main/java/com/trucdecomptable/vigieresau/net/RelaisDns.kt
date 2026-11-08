@@ -26,29 +26,56 @@ class RelaisDns(
     @Volatile
     var derniereErreur: String? = null
         private set
+
+    /** Port réellement écouté, null tant que le relais n'a pas démarré. */
+    @Volatile
+    var portUtilise: Int? = null
+        private set
+
+    /** Ports essayés lors du dernier démarrage, dans l'ordre. */
+    @Volatile
+    var portsTentes: List<Int> = emptyList()
+        private set
     private val actif = AtomicBoolean(false)
     private val fil = Executors.newSingleThreadExecutor { t -> Thread(t, "vigie-dns-relais").apply { isDaemon = true } }
     private val reponses = Executors.newFixedThreadPool(4) { t ->
         Thread(t, "vigie-dns-reponse").apply { isDaemon = true }
     }
 
-    /** Démarre l'écoute. [amont] = résolveurs réels du téléphone. */
-    fun demarrer(amont: List<InetAddress>): Boolean {
+    /**
+     * Démarre l'écoute. [amont] = résolveurs réels du téléphone.
+     *
+     * Le port est cherché parmi [port], puis [PORT_CANDIDATS] : Android occupe
+     * déjà 5353 avec son service mDNS, donc un port fixe échoue sur beaucoup de
+     * téléphones. Le port retenu est publié dans [portUtilise] et sert à la
+     * règle de redirection.
+     */
+    fun demarrer(amont: List<InetAddress>, candidats: List<Int> = PORT_CANDIDATS): Boolean {
         if (actif.get()) return true
-        return try {
-            val s = DatagramSocket(null).apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
+        derniereErreur = null
+        val tentes = mutableListOf<Int>()
+        for (essaie in (listOf(port) + candidats).distinct()) {
+            tentes += essaie
+            val s = try {
+                DatagramSocket(null).apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(essaie))
+                }
+            } catch (e: Exception) {
+                derniereErreur = "port $essaie : " + (e.message ?: e.javaClass.simpleName)
+                continue
             }
             socket = s
+            portUtilise = essaie
+            portsTentes = tentes.toList()
             actif.set(true)
             fil.execute { boucle(s, amont) }
-            true
-        } catch (e: Exception) {
-            actif.set(false)
-            derniereErreur = e.message ?: e.javaClass.simpleName
-            false
+            return true
         }
+        actif.set(false)
+        portUtilise = null
+        portsTentes = tentes.toList()
+        return false
     }
 
     fun arreter() {
@@ -101,7 +128,14 @@ class RelaisDns(
 
     companion object {
         /** Port non privilégié : la redirection iptables fait la traduction. */
-        const val PORT = 5353
+        const val PORT = 35353
+
+        /**
+         * Ports essayés dans l'ordre. 5353 est laissé en dernier parce que le
+         * service mDNS d'Android (mdnsd) l'occupe en permanence, ce qui faisait
+         * échouer le démarrage de la surveillance sur le téléphone de test.
+         */
+        val PORT_CANDIDATS = listOf(35353, 45353, 53535, 15353, 5533, 5353)
 
         /**
          * Redirige les requêtes DNS des clients du hotspot vers le relais.
@@ -112,7 +146,11 @@ class RelaisDns(
                 "-j REDIRECT --to-ports $port 2>/dev/null || " +
                 "iptables -t nat -A PREROUTING -i $interfaceHotspot -p udp --dport 53 " +
                 "-j REDIRECT --to-ports $port"
-            return Racine.exec(commande) != null
+            if (Racine.exec(commande) == null) return false
+            // La commande réussit aussi quand la règle existait déjà : on relit
+            // la chaîne pour être certain que la redirection est en place.
+            val chaine = Racine.exec("iptables -t nat -S PREROUTING").orEmpty()
+            return Reseau.regleRedirectionPresente(chaine, interfaceHotspot, port)
         }
 
         fun desinstaller(interfaceHotspot: String, port: Int = PORT) {

@@ -233,6 +233,25 @@ object Reseau {
                 "${libelleInterfaces(verdict.vues)}. Active le partage ou reviens à la détection automatique."
     }
 
+    /**
+     * Vrai si la sortie de `iptables -t nat -S PREROUTING` contient bien la
+     * redirection visée : la commande d'ajout seule ne prouve rien.
+     */
+    fun regleRedirectionPresente(sortie: String, interfaceHotspot: String, port: Int): Boolean =
+        sortie.lineSequence().any { ligne ->
+            ligne.contains("-i $interfaceHotspot") &&
+                ligne.contains("--dport 53") &&
+                ligne.contains("--to-ports $port") &&
+                ligne.contains("REDIRECT")
+        }
+
+    /** Message quand l'observation DNS n'a pas pu démarrer, sans bloquer le reste. */
+    fun messageDnsIndisponible(portsTentes: List<Int>, detail: String?): String =
+        "Surveillance sans observation DNS : aucun port libre parmi " +
+            portsTentes.ifEmpty { listOf(0) }.joinToString(", ") + "." +
+            (detail?.takeIf { it.isNotBlank() }?.let { " Détail : $it." } ?: "") +
+            " Les appareils et les volumes restent mesurés."
+
     fun messagePortOccupe(port: Int, detail: String?): String =
         "Port DNS $port occupé ou inaccessible" + (detail?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "") +
             ". Un autre programme l'utilise peut-être : arrête-le puis réessaie."

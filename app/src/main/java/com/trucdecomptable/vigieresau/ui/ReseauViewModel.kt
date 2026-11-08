@@ -56,6 +56,8 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
 
     private var relais: RelaisDns? = null
     private var interfaceSurveillee: String? = null
+    /** Port réellement écouté par le relais, utile pour retirer la redirection. */
+    private var portRelais: Int? = null
     private var erreurRelais: String? = null
     private val demarrageEnCours = AtomicBoolean(false)
     private var dumpsysCache = ""
@@ -155,34 +157,54 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
                 val iface = verdict.interfaceHotspot
-                val ok = withContext(Dispatchers.IO) {
+                // Un relais DNS qui ne démarre pas ne doit plus bloquer tout le
+                // reste : appareils et volumes restent mesurables sans lui.
+                val resultat = withContext(Dispatchers.IO) {
                     journaliser(Reseau.ligneDecision(frais))
                     val compteurs = Compteurs.preparer()
-                    val redirection = RelaisDns.installer(iface)
                     val nouveau = RelaisDns(surRequete = ::noterRequete)
                     val relaisPret = nouveau.demarrer(amontDns())
-                    if (relaisPret) {
-                        relais = nouveau
-                        interfaceSurveillee = iface
-                    } else {
-                        // Rien ne doit rester en place si le relais n'a pas démarré.
-                        RelaisDns.desinstaller(iface)
-                        Compteurs.arreter()
+                    var dnsOk = false
+                    var raison: String? = null
+                    if (!relaisPret) {
+                        raison = Reseau.messageDnsIndisponible(nouveau.portsTentes, nouveau.derniereErreur)
                         erreurRelais = nouveau.derniereErreur
+                    } else {
+                        val port = nouveau.portUtilise
+                        if (port != null && RelaisDns.installer(iface, port)) {
+                            relais = nouveau
+                            portRelais = port
+                            interfaceSurveillee = iface
+                            dnsOk = true
+                        } else {
+                            // Pas de redirection valable : on ne laisse pas le
+                            // relais tourner dans le vide.
+                            nouveau.arreter()
+                            raison = Reseau.messageDnsIndisponible(
+                                listOfNotNull(nouveau.portUtilise),
+                                "la redirection iptables a échoué",
+                            )
+                        }
                     }
-                    journaliser("Surveillance " + (if (relaisPret) "démarrée" else "non démarrée") +
+                    val demarre = compteurs || dnsOk
+                    journaliser("Surveillance " + (if (demarre) "démarrée" else "non démarrée") +
                         " sur $iface (compteurs=${if (compteurs) "ok" else "ko"}, " +
-                        "dns=${if (relaisPret) "ok" else "ko"}, redirection=${if (redirection) "ok" else "ko"})",
-                        alerte = !relaisPret)
-                    relaisPret
+                        "dns=${if (dnsOk) "ok port " + portRelais else "ko"}, " +
+                        "raison=${raison ?: "aucune"})",
+                        alerte = !dnsOk)
+                    Triple(demarre, dnsOk, raison)
                 }
-                if (ok) {
-                    _etat.update { it.copy(surveillance = true) }
-                    _message.value = "Surveillance active"
+                val (demarre, dnsOk, raison) = resultat
+                if (demarre) {
+                    _etat.update { it.copy(surveillance = true, dnsActif = dnsOk, dnsInfo = raison ?: portRelais?.let { "port $it" }) }
+                    _message.value = when {
+                        dnsOk -> "Surveillance active · domaines observés sur le port $portRelais"
+                        else -> raison ?: "Surveillance active sans observation DNS"
+                    }
                     lancerBoucle()
                 } else {
-                    _etat.update { it.copy(surveillance = false) }
-                    _message.value = Reseau.messagePortOccupe(RelaisDns.PORT, erreurRelais)
+                    _etat.update { it.copy(surveillance = false, dnsActif = false, dnsInfo = raison) }
+                    _message.value = raison ?: Reseau.messagePortOccupe(RelaisDns.PORT, erreurRelais)
                 }
             } finally {
                 demarrageEnCours.set(false)
@@ -195,14 +217,18 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         boucle = null
         // L'interface où la redirection a été posée, pas celle détectée à présent.
         val iface = interfaceSurveillee ?: _etat.value.interfaceHotspot
+        val port = portRelais
         viewModelScope.launch(Dispatchers.IO) {
             relais?.arreter()
             relais = null
             interfaceSurveillee = null
-            if (iface != null) RelaisDns.desinstaller(iface)
+            portRelais = null
+            if (iface != null) {
+                if (port != null) RelaisDns.desinstaller(iface, port) else RelaisDns.desinstaller(iface)
+            }
             Compteurs.arreter()
             journaliser("Surveillance arrêtée")
-            _etat.update { it.copy(surveillance = false) }
+            _etat.update { it.copy(surveillance = false, dnsActif = false, dnsInfo = null) }
         }
     }
 

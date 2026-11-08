@@ -1,5 +1,6 @@
 package com.trucdecomptable.vigieresau
 
+import com.trucdecomptable.vigieresau.net.RelaisDns
 import com.trucdecomptable.vigieresau.net.Reseau
 import com.trucdecomptable.vigieresau.net.Reseau.InterfaceIp
 import com.trucdecomptable.vigieresau.net.Reseau.Source
@@ -340,6 +341,35 @@ class DiagnosticTest {
 
         val aucune = Reseau.ligneDecision(etat(true, listOf(maison)))
         assertTrue(aucune, aucune.contains("Interface retenue : aucune") && aucune.contains("source : aucune"))
+    }
+
+    @Test
+    fun `les ports du relais evitent celui du mDNS d Android`() {
+        // mdnsd occupe 5353 en permanence : il ne doit jamais être essayé en premier.
+        assertTrue(RelaisDns.PORT_CANDIDATS.isNotEmpty())
+        assertTrue(RelaisDns.PORT_CANDIDATS.first() != 5353)
+        assertEquals(RelaisDns.PORT, RelaisDns.PORT_CANDIDATS.first())
+        assertEquals(RelaisDns.PORT_CANDIDATS.size, RelaisDns.PORT_CANDIDATS.distinct().size)
+        assertTrue(RelaisDns.PORT_CANDIDATS.all { it in 1024..65535 })
+    }
+
+    @Test
+    fun `la redirection n est reconnue que si iptables la liste vraiment`() {
+        val reelle = "-A PREROUTING -i ap0 -p udp -m udp --dport 53 -j REDIRECT --to-ports 35353"
+        assertTrue(Reseau.regleRedirectionPresente(reelle, "ap0", 35353))
+        // Mauvais port, mauvaise interface, chaîne vide : pas de redirection.
+        assertFalse(Reseau.regleRedirectionPresente(reelle, "ap0", 5353))
+        assertFalse(Reseau.regleRedirectionPresente(reelle, "wlan1", 35353))
+        assertFalse(Reseau.regleRedirectionPresente("", "ap0", 35353))
+    }
+
+    @Test
+    fun `le message d absence de DNS cite les ports essayes et rassure sur le reste`() {
+        val texte = Reseau.messageDnsIndisponible(listOf(35353, 45353), "Address already in use")
+        assertTrue(texte, texte.contains("35353") && texte.contains("45353"))
+        assertTrue(texte, texte.contains("Address already in use"))
+        assertTrue(texte, texte.contains("appareils", ignoreCase = true))
+        assertTrue(Reseau.messageDnsIndisponible(emptyList(), null).isNotBlank())
     }
 
     @Test

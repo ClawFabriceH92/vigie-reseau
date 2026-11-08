@@ -49,6 +49,10 @@ data class EtatPasserelle(
     val source: Reseau.Source = Reseau.Source.AUCUNE,
     /** Interface imposée par l'utilisateur, mémorisée dans les préférences. */
     val choixManuel: String? = null,
+    /** Vrai quand le relais DNS écoute : les domaines des appareils remontent. */
+    val dnsActif: Boolean = false,
+    /** Port écouté, ou raison de l'absence d'observation DNS. */
+    val dnsInfo: String? = null,
 ) {
     val resume: String
         get() = when {
