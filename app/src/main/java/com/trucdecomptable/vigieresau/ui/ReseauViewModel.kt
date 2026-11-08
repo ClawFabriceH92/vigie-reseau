@@ -368,6 +368,9 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         super.onCleared()
         boucle?.cancel()
         relais?.arreter()
+        // Le shell root est gardé pendant toute la vie de l'app (une seule
+        // autorisation Magisk) : on le referme seulement ici.
+        Racine.fermer()
     }
 
     companion object {

@@ -21,6 +21,19 @@ par `su` :
 
 Sans root, l'app affiche seulement l'état du partage de connexion et le explique.
 
+Le root n'est demandé **qu'une fois** : un seul shell `su` est ouvert et toutes
+les commandes passent dedans. Un `su -c` par commande faisait apparaître une
+notification Magisk toutes les trois secondes.
+
+### Port du relais DNS
+
+Android réserve le port UDP 5353 à son service mDNS (`mdnsd`). Le relais essaie
+donc 35353, 45353, 53535, 15353, 5533 puis 5353, retient le premier libre,
+l'utilise dans la règle `iptables` et relit la chaîne `PREROUTING` pour vérifier
+que la redirection est bien en place. Si aucun port ne répond, la surveillance
+démarre quand même (appareils et volumes) et l'app explique pourquoi les
+domaines ne remontent pas.
+
 ## Écrans
 
 - **Passerelle** : root accordé ou non, hotspot et uplink détectés, sous-réseau,
@@ -28,6 +41,10 @@ Sans root, l'app affiche seulement l'état du partage de connexion et le expliqu
   arrêter, export CSV.
 - **Appareils** : IP, MAC, nom DHCP, volume, nombre de requêtes ; un appui ouvre
   le détail avec les domaines les plus demandés.
+- **Requêtes** : les domaines demandés regroupés **par appareil** (nombre d'appels
+  et heure du dernier appel par domaine), avec un filtre de domaine. Un appui sur
+  un appareil déplie sa liste ; c'est la vue qui montre ce que fait chaque
+  appareil connecté.
 - **Journal** : détections d'appareils, démarrages, domaines surveillés.
 
 ## Réglage

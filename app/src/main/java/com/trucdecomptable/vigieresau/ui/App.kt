@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -59,12 +60,14 @@ import com.trucdecomptable.vigieresau.data.Appareil
 import com.trucdecomptable.vigieresau.data.EtatPasserelle
 import com.trucdecomptable.vigieresau.data.Evenement
 import com.trucdecomptable.vigieresau.data.RequeteDns
+import com.trucdecomptable.vigieresau.data.RequetesAppareil
 import com.trucdecomptable.vigieresau.data.octetsLisibles
+import com.trucdecomptable.vigieresau.data.regrouperParAppareil
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Trois onglets : l'état de la passerelle, les appareils, le journal. */
+/** Quatre onglets : la passerelle, les appareils, les requêtes par appareil, le journal. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Racine(vm: ReseauViewModel = viewModel()) {
@@ -142,6 +145,12 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
                 NavigationBarItem(
                     selected = onglet == 2,
                     onClick = { onglet = 2 },
+                    icon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    label = { Text("Requêtes (${requetes.size})") },
+                )
+                NavigationBarItem(
+                    selected = onglet == 3,
+                    onClick = { onglet = 3 },
                     icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                     label = { Text("Journal") },
                 )
@@ -161,6 +170,8 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
                 )
 
                 1 -> OngletAppareils(appareils = appareils, onOuvrir = { detail = it })
+
+                2 -> OngletRequetes(appareils = appareils, requetes = requetes)
 
                 else -> OngletJournal(journal = journal, onVider = vm::oublierJournal)
             }
@@ -193,7 +204,7 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
     }
 }
 
-private val titres = listOf("Vigie Réseau", "Appareils", "Journal")
+private val titres = listOf("Vigie Réseau", "Appareils", "Requêtes", "Journal")
 
 @Composable
 private fun OngletPasserelle(
@@ -381,6 +392,112 @@ private fun OngletAppareils(appareils: List<Appareil>, onOuvrir: (Appareil) -> U
         }
     }
 }
+
+/**
+ * Requêtes DNS regroupées par appareil : c'est la vue qui montre ce que chaque
+ * appareil du partage demande réellement, domaine par domaine.
+ */
+@Composable
+private fun OngletRequetes(appareils: List<Appareil>, requetes: List<RequeteDns>) {
+    var filtre by remember { mutableStateOf("") }
+    var ouvert by remember { mutableStateOf<String?>(null) }
+    val groupes = remember(requetes, filtre) { regrouperParAppareil(requetes, filtre) }
+    val noms = remember(appareils) { appareils.associate { it.ip to it.libelle } }
+    val format = remember { SimpleDateFormat("HH:mm:ss", Locale.FRANCE) }
+
+    Column(Modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = filtre,
+            onValueChange = { filtre = it },
+            label = { Text("Filtrer un domaine") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        if (groupes.isEmpty()) {
+            Text(
+                if (requetes.isEmpty()) {
+                    "Aucune requête DNS observée. Démarre la surveillance : les domaines demandés " +
+                        "par les appareils du partage apparaîtront ici, appareil par appareil."
+                } else {
+                    "Aucun domaine ne correspond à « $filtre »."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(24.dp),
+            )
+            return@Column
+        }
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(groupes, key = { it.ip }) { groupe ->
+                CarteRequetes(
+                    groupe = groupe,
+                    libelle = noms[groupe.ip],
+                    deplie = ouvert == groupe.ip,
+                    format = format,
+                    onBasculer = { ouvert = if (ouvert == groupe.ip) null else groupe.ip },
+                )
+            }
+        }
+    }
+}
+
+/** Un appareil, son volume de requêtes, et ses domaines quand on le déplie. */
+@Composable
+private fun CarteRequetes(
+    groupe: RequetesAppareil,
+    libelle: String?,
+    deplie: Boolean,
+    format: SimpleDateFormat,
+    onBasculer: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().clickable(onClick = onBasculer).padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        libelle?.takeIf { it.isNotBlank() } ?: groupe.ip,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        "${groupe.total} requête(s) · ${groupe.domaines.size} domaine(s) · " +
+                            "dernière à ${format.format(Date(groupe.dernier))}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Text(if (deplie) "\u25BE" else "\u25B8", style = MaterialTheme.typography.titleMedium)
+            }
+            if (deplie) {
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                groupe.domaines.take(MAX_DOMAINES_AFFICHES).forEach { domaine ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        Text(
+                            domaine.domaine,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "${domaine.occurrences}\u00D7 · ${format.format(Date(domaine.dernier))}",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                if (groupe.domaines.size > MAX_DOMAINES_AFFICHES) {
+                    Text(
+                        "… et ${groupe.domaines.size - MAX_DOMAINES_AFFICHES} autre(s). " +
+                            "Utilise le filtre pour affiner.",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Nombre de domaines dépliés d'un coup : au-delà, le filtre prend le relais. */
+private const val MAX_DOMAINES_AFFICHES = 300
 
 @Composable
 private fun OngletJournal(journal: List<Evenement>, onVider: () -> Unit) {
