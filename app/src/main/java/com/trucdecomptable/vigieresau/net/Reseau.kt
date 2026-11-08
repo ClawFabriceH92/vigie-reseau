@@ -234,6 +234,24 @@ object Reseau {
     }
 
     /**
+     * Lignes de `iptables -t nat -S PREROUTING` qui redirigent le DNS vers un des
+     * ports du relais : utile pour retirer une redirection laissée par une
+     * session interrompue, qui couperait le DNS des appareils.
+     */
+    fun lignesRedirection(sortie: String, ports: List<Int>): List<String> =
+        sortie.lineSequence()
+            .filter { ligne ->
+                ligne.startsWith("-A PREROUTING") &&
+                    ligne.contains("REDIRECT") &&
+                    ports.any { ligne.contains("--to-ports $it") }
+            }
+            .toList()
+
+    /** Commandes qui retirent les redirections trouvées ([lignesRedirection]). */
+    fun commandesNettoyage(sortie: String, ports: List<Int>): List<String> =
+        lignesRedirection(sortie, ports).map { ligne -> "iptables -t nat " + ligne.replaceFirst("-A ", "-D ") }
+
+    /**
      * Vrai si la sortie de `iptables -t nat -S PREROUTING` contient bien la
      * redirection visée : la commande d'ajout seule ne prouve rien.
      */

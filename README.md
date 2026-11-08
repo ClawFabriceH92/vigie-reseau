@@ -25,6 +25,13 @@ Le root n'est demandé **qu'une fois** : un seul shell `su` est ouvert et toutes
 les commandes passent dedans. Un `su -c` par commande faisait apparaître une
 notification Magisk toutes les trois secondes.
 
+### Redirections laissées par une session tuée
+
+Si l'app est tuée pendant la surveillance, la règle `iptables` reste en place et
+enverrait le DNS des appareils vers un port muet. Au démarrage suivant, l'app
+liste `PREROUTING`, retire les redirections qui visent un de ses ports et note
+l'opération dans le journal.
+
 ### Port du relais DNS
 
 Android réserve le port UDP 5353 à son service mDNS (`mdnsd`). Le relais essaie
@@ -41,10 +48,12 @@ domaines ne remontent pas.
   arrêter, export CSV.
 - **Appareils** : IP, MAC, nom DHCP, volume, nombre de requêtes ; un appui ouvre
   le détail avec les domaines les plus demandés.
-- **Requêtes** : les domaines demandés regroupés **par appareil** (nombre d'appels
-  et heure du dernier appel par domaine), avec un filtre de domaine. Un appui sur
-  un appareil déplie sa liste ; c'est la vue qui montre ce que fait chaque
-  appareil connecté.
+- **Requêtes** : les domaines demandés regroupés **par appareil** (nom de
+  l'appareil puis son IP, nombre d'appels et heure du dernier appel par domaine),
+  avec un filtre de domaine. Un appui sur un appareil déplie sa liste ; c'est la
+  vue qui montre ce que fait chaque appareil connecté. L'historique est écrit en
+  base locale (SQLite, 7 jours de rétention) et rechargé au lancement : il
+  survit au redémarrage de l'app et l'export CSV le reprend en entier.
 - **Journal** : détections d'appareils, démarrages, domaines surveillés.
 
 ## Réglage

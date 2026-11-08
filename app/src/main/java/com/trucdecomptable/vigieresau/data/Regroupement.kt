@@ -16,6 +16,16 @@ data class RequetesAppareil(
 )
 
 /**
+ * Titre et sous-titre d'un appareil : le nom quand on le connaît (nom DHCP, à
+ * défaut la MAC), et l'adresse rappelée juste en dessous pour s'y retrouver.
+ * Rend (titre, adresse) ; l'adresse est vide quand le titre est déjà l'IP.
+ */
+fun etiquette(libelle: String?, ip: String): Pair<String, String> {
+    val nom = libelle?.trim().orEmpty()
+    return if (nom.isBlank() || nom == ip) ip to "" else nom to ip
+}
+
+/**
  * Regroupe les requêtes DNS par appareil, pour l'onglet « Requêtes ».
  *
  * [filtre] ne garde que les domaines qui contiennent le texte (insensible à la

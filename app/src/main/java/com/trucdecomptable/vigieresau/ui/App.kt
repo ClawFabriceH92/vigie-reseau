@@ -62,6 +62,7 @@ import com.trucdecomptable.vigieresau.data.Evenement
 import com.trucdecomptable.vigieresau.data.RequeteDns
 import com.trucdecomptable.vigieresau.data.RequetesAppareil
 import com.trucdecomptable.vigieresau.data.octetsLisibles
+import com.trucdecomptable.vigieresau.data.etiquette
 import com.trucdecomptable.vigieresau.data.regrouperParAppareil
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -77,6 +78,7 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
     val requetes by vm.requetes.collectAsStateWithLifecycle()
     val journal by vm.journal.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
+    val export by vm.export.collectAsStateWithLifecycle()
 
     var onglet by remember { mutableStateOf(0) }
     var reglages by remember { mutableStateOf(false) }
@@ -93,11 +95,11 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
         vm.messageLu()
     }
 
-    fun partagerCsv() {
-        val fichier = vm.exporterCsv()
-        if (fichier == null) {
-            return
-        }
+    // Le CSV est préparé en arrière-plan (historique complet lu en base) : on
+    // partage dès qu'il est prêt.
+    LaunchedEffect(export) {
+        val fichier = export ?: return@LaunchedEffect
+        vm.exportLu()
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", fichier)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/csv"
@@ -120,7 +122,7 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
                         IconButton(onClick = { reglages = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Réglages")
                         }
-                        IconButton(onClick = { partagerCsv() }) {
+                        IconButton(onClick = { vm.exporterCsv() }) {
                             Icon(Icons.Default.IosShare, contentDescription = "Exporter en CSV")
                         }
                     }
@@ -455,15 +457,16 @@ private fun CarteRequetes(
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().clickable(onClick = onBasculer).padding(16.dp)) {
+            val (titre, adresse) = etiquette(libelle, groupe.ip)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
+                    Text(titre, style = MaterialTheme.typography.titleSmall)
                     Text(
-                        libelle?.takeIf { it.isNotBlank() } ?: groupe.ip,
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        "${groupe.total} requête(s) · ${groupe.domaines.size} domaine(s) · " +
-                            "dernière à ${format.format(Date(groupe.dernier))}",
+                        buildString {
+                            if (adresse.isNotBlank()) append(adresse).append(" · ")
+                            append("${groupe.total} requête(s) · ${groupe.domaines.size} domaine(s)")
+                            append(" · dernière à ${format.format(Date(groupe.dernier))}")
+                        },
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

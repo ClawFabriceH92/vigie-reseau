@@ -1,6 +1,7 @@
 package com.trucdecomptable.vigieresau
 
 import com.trucdecomptable.vigieresau.data.RequeteDns
+import com.trucdecomptable.vigieresau.data.etiquette
 import com.trucdecomptable.vigieresau.data.regrouperParAppareil
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -44,6 +45,19 @@ class RegroupementTest {
         // Filtre vide ou espaces : tout revient.
         assertEquals(2, regrouperParAppareil(requetes, "   ").size)
         assertEquals(2, regrouperParAppareil(requetes).size)
+    }
+
+    @Test
+    fun `le nom de l appareil est affiche a cote de l IP`() {
+        // Nom connu : le nom en titre, l'IP en dessous.
+        assertEquals("DESKTOP-4F2" to "192.168.43.5", etiquette("DESKTOP-4F2", "192.168.43.5"))
+        // Pas de nom : l'IP sert de titre, sans la répéter.
+        assertEquals("192.168.43.5" to "", etiquette(null, "192.168.43.5"))
+        assertEquals("192.168.43.5" to "", etiquette("   ", "192.168.43.5"))
+        // Le libellé vaut déjà l'IP : pas de doublon.
+        assertEquals("192.168.43.5" to "", etiquette("192.168.43.5", "192.168.43.5"))
+        // Une MAC comme libellé reste utile au-dessus de l'IP.
+        assertEquals("aa:bb:cc:dd:ee:ff" to "192.168.43.5", etiquette(" aa:bb:cc:dd:ee:ff ", "192.168.43.5"))
     }
 
     @Test

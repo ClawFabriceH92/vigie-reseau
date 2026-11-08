@@ -364,6 +364,25 @@ class DiagnosticTest {
     }
 
     @Test
+    fun `une redirection laissee par une session tuee est retiree`() {
+        val sortie = listOf(
+            "-P PREROUTING ACCEPT",
+            "-A PREROUTING -i ap0 -p udp -m udp --dport 53 -j REDIRECT --to-ports 35353",
+            "-A PREROUTING -i ap0 -p udp -m udp --dport 8080 -j DNAT --to-destination 192.168.43.1:8080",
+            "-A PREROUTING -i ap0 -p udp -m udp --dport 53 -j REDIRECT --to-ports 9999",
+        ).joinToString("\n")
+        val ports = listOf(35353, 45353)
+        val lignes = Reseau.lignesRedirection(sortie, ports)
+        assertEquals(1, lignes.size)
+        // Une autre redirection (port inconnu, autre type) ne doit pas être touchée.
+        assertEquals(
+            listOf("iptables -t nat -D PREROUTING -i ap0 -p udp -m udp --dport 53 -j REDIRECT --to-ports 35353"),
+            Reseau.commandesNettoyage(sortie, ports),
+        )
+        assertTrue(Reseau.commandesNettoyage("", ports).isEmpty())
+    }
+
+    @Test
     fun `le message d absence de DNS cite les ports essayes et rassure sur le reste`() {
         val texte = Reseau.messageDnsIndisponible(listOf(35353, 45353), "Address already in use")
         assertTrue(texte, texte.contains("35353") && texte.contains("45353"))

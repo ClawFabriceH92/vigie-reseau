@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.trucdecomptable.vigieresau.data.Appareil
 import com.trucdecomptable.vigieresau.data.EtatPasserelle
 import com.trucdecomptable.vigieresau.data.Evenement
+import com.trucdecomptable.vigieresau.data.Historique
 import com.trucdecomptable.vigieresau.data.RequeteDns
 import com.trucdecomptable.vigieresau.net.Compteurs
 import com.trucdecomptable.vigieresau.net.Racine
@@ -64,6 +65,44 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     private var dumpsysHeure = 0L
     private var boucle: Job? = null
     private val vus = mutableSetOf<String>()
+
+    /** Historique sur disque : les requêtes survivent au redémarrage de l'app. */
+    private val historique = Historique(application)
+    private var dernierePurge = 0L
+
+    init {
+        // Rechargement des requêtes déjà connues, puis purge des vieilles lignes.
+        viewModelScope.launch(Dispatchers.IO) {
+            purgerHistorique(forcer = true)
+            // Une redirection DNS laissée par une session tuée enverrait les
+            // requêtes des appareils vers un port muet : le DNS du partage
+            // tomberait. On la retire avant tout démarrage.
+            val commandes = Reseau.commandesNettoyage(
+                Racine.exec("iptables -t nat -S PREROUTING").orEmpty(),
+                RelaisDns.PORT_CANDIDATS,
+            )
+            if (commandes.isNotEmpty()) {
+                commandes.forEach { Racine.exec(it) }
+                journaliser("Redirection DNS périmée retirée (${commandes.size})", alerte = false)
+            }
+            val chargees = historique.charger()
+            if (chargees.isNotEmpty()) {
+                _requetes.update { actuelles ->
+                    (chargees + actuelles)
+                        .distinctBy { Triple(it.horodatage, it.ipSource, it.domaine) }
+                        .takeLast(RETENTION_REQUETES)
+                }
+            }
+        }
+    }
+
+    /** Purge l'historique au-delà de la rétention (au lancement et toutes les heures). */
+    private fun purgerHistorique(forcer: Boolean = false) {
+        val maintenant = System.currentTimeMillis()
+        if (!forcer && maintenant - dernierePurge < DUREE_ENTRE_PURGES_MS) return
+        dernierePurge = maintenant
+        historique.purgerAvant(maintenant - Historique.RETENTION_MS)
+    }
 
     fun messageLu() {
         _message.value = null
@@ -284,8 +323,13 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun noterRequete(ipSource: String, domaine: String) {
-        val requete = RequeteDns(System.currentTimeMillis(), ipSource, domaine)
+        val maintenant = System.currentTimeMillis()
+        val requete = RequeteDns(maintenant, ipSource, domaine)
         _requetes.value = (_requetes.value + requete).takeLast(RETENTION_REQUETES)
+        // Écriture immédiate sur disque : appelé par le fil du relais DNS, jamais
+        // par le fil principal.
+        historique.ajouter(maintenant, ipSource, domaine)
+        purgerHistorique()
         val surveille = _etat.value.domaineSurveille
         if (surveille.isNotBlank() && domaine.contains(surveille, ignoreCase = true)) {
             journaliser("Domaine surveillé demandé : $domaine depuis $ipSource", alerte = true)
@@ -331,12 +375,33 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         _journal.value = emptyList()
         _requetes.value = emptyList()
         vus.clear()
+        viewModelScope.launch(Dispatchers.IO) { historique.vider() }
     }
 
     // ------------------------------------------------------------------- export
 
-    /** CSV appareils + domaines, prêt à partager. */
-    fun exporterCsv(): File? = runCatching {
+    private val _export = MutableStateFlow<File?>(null)
+
+    /** Fichier prêt à partager, publié dès que le CSV est écrit. */
+    val export: StateFlow<File?> = _export.asStateFlow()
+
+    fun exportLu() {
+        _export.value = null
+    }
+
+    /**
+     * Prépare le CSV (appareils + tout l'historique enregistré) en arrière-plan :
+     * la lecture de la base et l'écriture du fichier ne vont pas sur le fil
+     * principal.
+     */
+    fun exporterCsv() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val requetes = historique.charger(Historique.EXPORT_MAX).ifEmpty { _requetes.value }
+            _export.value = construireCsv(requetes)
+        }
+    }
+
+    private fun construireCsv(requetes: List<RequeteDns>): File? = runCatching {
         val dossier = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
         val horodatage = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.FRANCE).format(Date())
         val fichier = File(dossier, "vigie-reseau-$horodatage.csv")
@@ -353,7 +418,7 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
                     .append(separateur).append("").append('\n')
             }
             val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.FRANCE)
-            _requetes.value.forEach { r ->
+            requetes.forEach { r ->
                 append("dns").append(separateur).append(r.ipSource).append(separateur).append("")
                     .append(separateur).append(r.domaine).append(separateur).append("")
                     .append(separateur).append("").append(separateur).append("")
@@ -371,6 +436,7 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         // Le shell root est gardé pendant toute la vie de l'app (une seule
         // autorisation Magisk) : on le referme seulement ici.
         Racine.fermer()
+        historique.close()
     }
 
     companion object {
@@ -381,5 +447,8 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         const val CLE_INTERFACE_MANUELLE = "interface_manuelle"
 
         private const val DUREE_CACHE_DUMPSYS_MS = 30_000L
+
+        /** Fréquence de purge de l'historique : une fois par heure suffit. */
+        private const val DUREE_ENTRE_PURGES_MS = 3_600_000L
     }
 }
