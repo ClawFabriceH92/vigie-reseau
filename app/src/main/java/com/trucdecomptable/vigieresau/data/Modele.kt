@@ -1,5 +1,7 @@
 package com.trucdecomptable.vigieresau.data
 
+import com.trucdecomptable.vigieresau.net.Reseau
+
 /** Un appareil vu sur le partage de connexion. */
 data class Appareil(
     val ip: String,
@@ -39,13 +41,22 @@ data class EtatPasserelle(
     val uplink: String? = null,
     val surveillance: Boolean = false,
     val domaineSurveille: String = "",
+    /** Toutes les interfaces lues (nom et adresse), retenue ou non. */
+    val interfacesVues: List<Reseau.InterfaceIp> = emptyList(),
+    /** Interfaces que dumpsys désigne comme portant le partage. */
+    val designeesDumpsys: List<String> = emptyList(),
+    /** D'où vient l'interface retenue : choix manuel, dumpsys ou détection automatique. */
+    val source: Reseau.Source = Reseau.Source.AUCUNE,
+    /** Interface imposée par l'utilisateur, mémorisée dans les préférences. */
+    val choixManuel: String? = null,
 ) {
     val resume: String
         get() = when {
             !racine -> "Accès root absent : les données des appareils sont invisibles"
             hotspotActif && uplink != null -> "Hotspot actif sur $interfaceHotspot · uplink $uplink"
             hotspotActif -> "Hotspot actif sur $interfaceHotspot · aucun uplink détecté"
-            else -> "Aucun partage de connexion actif"
+            choixManuel != null -> "Interface choisie ($choixManuel) absente"
+            else -> "Aucun partage de connexion détecté"
         }
 }
 

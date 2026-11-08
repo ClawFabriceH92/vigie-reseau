@@ -1,7 +1,5 @@
 package com.trucdecomptable.vigieresau.net
 
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 /**
@@ -20,12 +18,19 @@ object Racine {
      */
     fun exec(commande: String, delaiMs: Long = 8_000): String? = try {
         val processus = ProcessBuilder("su", "-c", commande).redirectErrorStream(true).start()
-        val sortie = processus.inputStream.bufferedReader().use(BufferedReader::readText)
-        if (!processus.waitFor(delaiMs, TimeUnit.MILLISECONDS)) {
+        // La lecture se fait dans un fil à part : une commande qui se bloque
+        // (dumpsys, su en attente d'autorisation) ne doit pas figer l'app.
+        val sortie = StringBuffer()
+        val lecteur = Thread {
+            runCatching { processus.inputStream.bufferedReader().use { sortie.append(it.readText()) } }
+        }.apply { isDaemon = true; start() }
+        lecteur.join(delaiMs)
+        if (lecteur.isAlive) {
             processus.destroy()
             null
         } else {
-            sortie
+            processus.waitFor(1_000, TimeUnit.MILLISECONDS)
+            sortie.toString()
         }
     } catch (e: Exception) {
         null

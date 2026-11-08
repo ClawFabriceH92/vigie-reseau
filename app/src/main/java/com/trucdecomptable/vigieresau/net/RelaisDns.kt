@@ -21,6 +21,11 @@ class RelaisDns(
 ) {
 
     private var socket: DatagramSocket? = null
+
+    /** Raison du dernier échec de [demarrer], pour l'afficher à l'utilisateur. */
+    @Volatile
+    var derniereErreur: String? = null
+        private set
     private val actif = AtomicBoolean(false)
     private val fil = Executors.newSingleThreadExecutor { t -> Thread(t, "vigie-dns-relais").apply { isDaemon = true } }
     private val reponses = Executors.newFixedThreadPool(4) { t ->
@@ -41,6 +46,7 @@ class RelaisDns(
             true
         } catch (e: Exception) {
             actif.set(false)
+            derniereErreur = e.message ?: e.javaClass.simpleName
             false
         }
     }

@@ -19,14 +19,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Tout l'état de l'app : détection de la passerelle, appareils, domaines vus,
@@ -52,6 +55,11 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     val message: StateFlow<String?> = _message.asStateFlow()
 
     private var relais: RelaisDns? = null
+    private var interfaceSurveillee: String? = null
+    private var erreurRelais: String? = null
+    private val demarrageEnCours = AtomicBoolean(false)
+    private var dumpsysCache = ""
+    private var dumpsysHeure = 0L
     private var boucle: Job? = null
     private val vus = mutableSetOf<String>()
 
@@ -62,57 +70,122 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     /** Détection seule : pas besoin de root pour l'état, seulement pour les détails. */
     fun rafraichirEtat() {
         viewModelScope.launch(Dispatchers.IO) {
-            _etat.value = detecter(_etat.value.surveillance)
+            fusionner(detecter(forcerDumpsys = false))
         }
     }
 
-    private fun detecter(surveillance: Boolean): EtatPasserelle {
+    /**
+     * Range une détection fraîche dans l'état sans écraser ce qui n'est pas de
+     * son ressort (surveillance en cours, domaine surveillé) : la valeur est lue
+     * au moment de l'écriture, pas avant la détection.
+     */
+    private fun fusionner(detection: EtatPasserelle) {
+        _etat.update { it.copy(
+            racine = detection.racine,
+            hotspotActif = detection.hotspotActif,
+            interfaceHotspot = detection.interfaceHotspot,
+            sousReseau = detection.sousReseau,
+            uplink = detection.uplink,
+            interfacesVues = detection.interfacesVues,
+            designeesDumpsys = detection.designeesDumpsys,
+            source = detection.source,
+            choixManuel = detection.choixManuel,
+        ) }
+    }
+
+    /** Lit le téléphone puis laisse [Reseau.construireEtat] décider. À appeler hors du fil principal. */
+    private fun detecter(forcerDumpsys: Boolean): EtatPasserelle {
         val racine = Racine.disponible()
-        val adresses = Racine.exec("ip -o -4 addr show").orEmpty()
-        val route = Racine.exec("ip route get 1.1.1.1").orEmpty()
-        val interfaces = Reseau.interfaces(adresses)
-        val uplink = Reseau.uplink(route)
-        val hotspot = Reseau.interfaceHotspot(interfaces, uplink)
-        return EtatPasserelle(
-            racine = racine,
-            hotspotActif = hotspot != null,
-            interfaceHotspot = hotspot?.nom,
-            sousReseau = hotspot?.let { Reseau.sousReseau(it.ip, it.prefixe) },
-            uplink = uplink,
-            surveillance = surveillance,
-            domaineSurveille = _etat.value.domaineSurveille,
-        )
+        val manuelle = preferences.getString(CLE_INTERFACE_MANUELLE, null)?.takeIf { it.isNotBlank() }
+        var interfaces = if (racine) Reseau.interfaces(Racine.exec("ip -o -4 addr show").orEmpty()) else emptyList()
+        // Secours sans `ip` : l'API Java voit les interfaces actives, même sans root.
+        if (interfaces.isEmpty()) interfaces = interfacesJava()
+        val uplink = (if (racine) Reseau.uplink(Racine.exec("ip route get 1.1.1.1").orEmpty()) else null)
+            ?: uplinkAndroid()
+        // dumpsys est lourd et inutile si l'utilisateur a imposé son interface.
+        val dumpsys = if (racine && manuelle == null) lireDumpsys(forcerDumpsys) else ""
+        return Reseau.construireEtat(racine, interfaces, uplink, dumpsys, manuelle)
+    }
+
+    /** Sortie de `dumpsys` (tethering puis wifi), mise en cache 30 s pour la boucle de 3 s. */
+    private fun lireDumpsys(forcer: Boolean): String {
+        val maintenant = System.currentTimeMillis()
+        if (!forcer && maintenant - dumpsysHeure < DUREE_CACHE_DUMPSYS_MS) return dumpsysCache
+        var texte = Racine.exec("dumpsys connectivity", 10_000).orEmpty()
+        if (Reseau.interfacesDesigneesDumpsys(texte).isEmpty()) {
+            texte += "\n" + Racine.exec("dumpsys wifi", 10_000).orEmpty()
+        }
+        dumpsysCache = texte
+        dumpsysHeure = maintenant
+        return texte
+    }
+
+    private fun interfacesJava(): List<Reseau.InterfaceIp> = runCatching {
+        NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp }.flatMap { ni ->
+            ni.interfaceAddresses.filter { it.address is Inet4Address }.map {
+                Reseau.InterfaceIp(ni.name, it.address.hostAddress.orEmpty(), it.networkPrefixLength.toInt())
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun uplinkAndroid(): String? {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        val actif = cm?.activeNetwork ?: return null
+        return cm.getLinkProperties(actif)?.interfaceName
     }
 
     // ------------------------------------------------------------- surveillance
 
+    /**
+     * Recalcule l'état AVANT de décider : l'écran a pu vieillir (partage activé
+     * après l'ouverture de l'app, retour de l'arrière-plan).
+     */
     fun demarrer() {
-        val courant = _etat.value
-        if (!courant.racine) {
-            _message.value = "Root indisponible : accorde l'accès à l'app dans Magisk"
-            return
-        }
-        val iface = courant.interfaceHotspot
-        if (iface == null) {
-            _message.value = "Active d'abord le partage de connexion"
-            return
-        }
+        if (_etat.value.surveillance || !demarrageEnCours.compareAndSet(false, true)) return
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                val compteurs = Compteurs.preparer()
-                val redirection = RelaisDns.installer(iface)
-                val relaisPret = RelaisDns(surRequete = ::noterRequete).also { relais = it }.demarrer(amontDns())
-                journaliser("Surveillance démarrée sur $iface (compteurs=${if (compteurs) "ok" else "ko"}, " +
-                    "dns=${if (relaisPret) "ok" else "ko"}, redirection=${if (redirection) "ok" else "ko"})")
-                relaisPret
-            }
-            _etat.value = _etat.value.copy(surveillance = true)
-            if (ok) {
-                _message.value = "Surveillance active"
-                lancerBoucle()
-            } else {
-                _message.value = "Impossible de démarrer : port 5353 occupé ?"
-                _etat.value = _etat.value.copy(surveillance = false)
+            try {
+                val (frais, verdict) = withContext(Dispatchers.IO) {
+                    Reseau.evaluerDemarrage { detecter(forcerDumpsys = true) }
+                }
+                fusionner(frais)
+                if (verdict !is Reseau.Verdict.Autorise) {
+                    val texte = Reseau.messageRefus(verdict).orEmpty()
+                    journaliser("Démarrage refusé : $texte · ${Reseau.ligneDecision(frais)}", alerte = true)
+                    _message.value = texte
+                    return@launch
+                }
+                val iface = verdict.interfaceHotspot
+                val ok = withContext(Dispatchers.IO) {
+                    journaliser(Reseau.ligneDecision(frais))
+                    val compteurs = Compteurs.preparer()
+                    val redirection = RelaisDns.installer(iface)
+                    val nouveau = RelaisDns(surRequete = ::noterRequete)
+                    val relaisPret = nouveau.demarrer(amontDns())
+                    if (relaisPret) {
+                        relais = nouveau
+                        interfaceSurveillee = iface
+                    } else {
+                        // Rien ne doit rester en place si le relais n'a pas démarré.
+                        RelaisDns.desinstaller(iface)
+                        Compteurs.arreter()
+                        erreurRelais = nouveau.derniereErreur
+                    }
+                    journaliser("Surveillance " + (if (relaisPret) "démarrée" else "non démarrée") +
+                        " sur $iface (compteurs=${if (compteurs) "ok" else "ko"}, " +
+                        "dns=${if (relaisPret) "ok" else "ko"}, redirection=${if (redirection) "ok" else "ko"})",
+                        alerte = !relaisPret)
+                    relaisPret
+                }
+                if (ok) {
+                    _etat.update { it.copy(surveillance = true) }
+                    _message.value = "Surveillance active"
+                    lancerBoucle()
+                } else {
+                    _etat.update { it.copy(surveillance = false) }
+                    _message.value = Reseau.messagePortOccupe(RelaisDns.PORT, erreurRelais)
+                }
+            } finally {
+                demarrageEnCours.set(false)
             }
         }
     }
@@ -120,14 +193,16 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     fun arreter() {
         boucle?.cancel()
         boucle = null
-        val iface = _etat.value.interfaceHotspot
+        // L'interface où la redirection a été posée, pas celle détectée à présent.
+        val iface = interfaceSurveillee ?: _etat.value.interfaceHotspot
         viewModelScope.launch(Dispatchers.IO) {
             relais?.arreter()
             relais = null
+            interfaceSurveillee = null
             if (iface != null) RelaisDns.desinstaller(iface)
             Compteurs.arreter()
             journaliser("Surveillance arrêtée")
-            _etat.value = _etat.value.copy(surveillance = false)
+            _etat.update { it.copy(surveillance = false) }
         }
     }
 
@@ -144,8 +219,8 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     /** Appareils + compteurs : appelé par la boucle, réutilisable à la demande. */
     fun rafraichirDonnees() {
         viewModelScope.launch(Dispatchers.IO) {
-            val courant = detecter(_etat.value.surveillance)
-            _etat.value = courant
+            val courant = detecter(forcerDumpsys = false)
+            fusionner(courant)
             val iface = courant.interfaceHotspot ?: return@launch
 
             val baux = Racine.exec("cat /data/misc/dhcp/dnsmasq.leases 2>/dev/null").orEmpty()
@@ -209,6 +284,23 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
         _etat.value = _etat.value.copy(domaineSurveille = domaine.trim())
     }
 
+    /**
+     * Impose l'interface du partage (prioritaire sur toute détection) ou, avec
+     * null, revient à la détection automatique. Refusé pendant la surveillance :
+     * la redirection DNS est posée sur l'interface en cours.
+     */
+    fun definirInterfaceManuelle(nom: String?) {
+        if (_etat.value.surveillance) {
+            _message.value = "Arrête la surveillance avant de changer d'interface"
+            return
+        }
+        preferences.edit().apply {
+            if (nom.isNullOrBlank()) remove(CLE_INTERFACE_MANUELLE) else putString(CLE_INTERFACE_MANUELLE, nom)
+        }.apply()
+        journaliser(if (nom.isNullOrBlank()) "Détection automatique de l'interface rétablie" else "Interface imposée : $nom")
+        rafraichirEtat()
+    }
+
     fun oublierJournal() {
         _journal.value = emptyList()
         _requetes.value = emptyList()
@@ -255,5 +347,10 @@ class ReseauViewModel(application: Application) : AndroidViewModel(application) 
     companion object {
         /** Bornes de rétention : l'app doit tenir des heures sans saturer la RAM. */
         const val RETENTION_REQUETES = 5_000
+
+        /** Clé des préférences : interface du partage choisie à la main. */
+        const val CLE_INTERFACE_MANUELLE = "interface_manuelle"
+
+        private const val DUREE_CACHE_DUMPSYS_MS = 30_000L
     }
 }

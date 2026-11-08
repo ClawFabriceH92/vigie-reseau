@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -48,6 +50,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.trucdecomptable.vigieresau.data.Appareil
@@ -75,7 +79,9 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
     var detail by remember { mutableStateOf<Appareil?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
-    LaunchedEffect(Unit) { vm.rafraichirEtat() }
+    // Au premier affichage comme à chaque retour au premier plan : l'état vieillit
+    // dès que l'utilisateur active le partage de connexion hors de l'app.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.rafraichirEtat() }
 
     LaunchedEffect(message) {
         val texte = message ?: return@LaunchedEffect
@@ -150,6 +156,7 @@ fun Racine(vm: ReseauViewModel = viewModel()) {
                     domaines = requetes.size,
                     onDemarrer = vm::demarrer,
                     onArreter = vm::arreter,
+                    onChoisirInterface = vm::definirInterfaceManuelle,
                 )
 
                 1 -> OngletAppareils(appareils = appareils, onOuvrir = { detail = it })
@@ -192,8 +199,12 @@ private fun OngletPasserelle(
     domaines: Int,
     onDemarrer: () -> Unit,
     onArreter: () -> Unit,
+    onChoisirInterface: (String?) -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Card(
             Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -225,12 +236,76 @@ private fun OngletPasserelle(
             }
         }
 
+        SectionDiagnostic(etat = etat, onChoisir = onChoisirInterface)
+
         Text(
             "La surveillance lit les baux DHCP, les voisins, les compteurs iptables et les " +
                 "questions DNS des appareils connectés. Sans root, ces informations ne sont " +
                 "pas accessibles : l'app ne montre alors que l'état du partage de connexion.",
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+/**
+ * Diagnostic : toutes les interfaces lues, celle retenue pour le partage et la
+ * raison, plus le choix manuel (mémorisé, prioritaire sur la détection).
+ */
+@Composable
+private fun SectionDiagnostic(etat: EtatPasserelle, onChoisir: (String?) -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Diagnostic", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Ligne("Interface retenue", etat.interfaceHotspot ?: "aucune")
+            Ligne("Source", if (etat.interfaceHotspot == null) "aucune" else etat.source.libelle)
+            Ligne("Désignée par dumpsys", etat.designeesDumpsys.joinToString(", ").ifBlank { "rien" })
+            if (etat.choixManuel != null) Ligne("Choix manuel", etat.choixManuel)
+
+            Text(
+                "Interfaces vues (${etat.interfacesVues.size})",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            if (etat.interfacesVues.isEmpty()) {
+                Text(
+                    if (etat.racine) "Aucune interface lue." else "Aucune interface lue (root absent).",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            etat.interfacesVues.forEach { vue ->
+                val notes = listOfNotNull(
+                    if (vue.nom == etat.interfaceHotspot) "retenue" else null,
+                    if (vue.nom == etat.uplink) "uplink" else null,
+                    if (vue.nom == etat.choixManuel) "choisie" else null,
+                ).joinToString(" · ")
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            vue.nom,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (vue.nom == etat.interfaceHotspot) FontWeight.Bold else FontWeight.Normal,
+                        )
+                        Text(
+                            "${vue.ip}/${vue.prefixe}" + if (notes.isNotBlank()) " · $notes" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    TextButton(
+                        onClick = { onChoisir(vue.nom) },
+                        enabled = !etat.surveillance && vue.nom != etat.choixManuel,
+                    ) { Text("Choisir") }
+                }
+            }
+
+            OutlinedButton(
+                onClick = { onChoisir(null) },
+                enabled = !etat.surveillance && etat.choixManuel != null,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Détection automatique") }
+            if (etat.surveillance) {
+                Text("Arrête la surveillance pour changer d'interface.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }
 
